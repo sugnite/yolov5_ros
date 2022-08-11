@@ -45,6 +45,8 @@ class Yolov5Detector:
         self.classes = rospy.get_param("~classes", None)
         self.line_thickness = rospy.get_param("~line_thickness")
         self.view_image = rospy.get_param("~view_image")
+        self.rotate_img = rospy.get_param("~rotate_img")
+        self.black_and_white = rospy.get_param("~black_and_white")
         # Initialize weights 
         weights = rospy.get_param("~weights")
         # Initialize model
@@ -72,7 +74,7 @@ class Yolov5Detector:
             self.model.model.half() if self.half else self.model.model.float()
         bs = 1  # batch_size
         cudnn.benchmark = True  # set True to speed up constant image size inference
-        self.model.warmup(imgsz=(1 if self.pt else bs, 3, *self.img_size), half=self.half)  # warmup        
+        self.model.warmup(imgsz=(1 if self.pt else bs, 3, *self.img_size))#, half=self.half)  # warmup        
         
         # Initialize subscriber to Image/CompressedImage topic
         input_image_type, input_image_topic, _ = get_topic_type(rospy.get_param("~input_image_topic"), blocking = True)
@@ -97,19 +99,63 @@ class Yolov5Detector:
             self.image_pub = rospy.Publisher(
                 rospy.get_param("~output_image_topic"), Image, queue_size=10
             )
-        
+        # COmmon variables for callback
+        self.im, self.im0 = np.array([]), np.array([])
+        self.pub_img = Image()
+        self.started = 0
+        # Add the stamp fo the image time
         # Initialize CV_Bridge
         self.bridge = CvBridge()
+        # run the main
+        self.main_loop()
 
     def callback(self, data):
         """adapted from yolov5/detect.py"""
-        # print(data.header)
+        # get the tiemstamp of te data
         if self.compressed_input:
             im = self.bridge.compressed_imgmsg_to_cv2(data, desired_encoding="bgr8")
         else:
-            im = self.bridge.imgmsg_to_cv2(data, desired_encoding="bgr8")
-        
-        im, im0 = self.preprocess(im)
+            self.pub_img = data
+            im = np.frombuffer(data.data, dtype=np.uint8).reshape(data.height, data.width, -1)
+            # rotate the image
+            if self.rotate_img != 0:
+                im = self.rotate_image(im, self.rotate_img)
+            if self.started == 0:
+                rospy.loginfo('Starting Object Recognition...')
+                self.started = 1
+            self.im = im
+            # im = self.bridge.imgmsg_to_cv2(data, desired_encoding="bgr8")
+
+    def rotate_bound(self,image, angle):
+        image_center = tuple(np.array(image.shape[1::-1]) / 2)
+        rot_mat = cv2.getRotationMatrix2D(image_center, angle, 1.0)
+        result = cv2.warpAffine(image, rot_mat, image.shape[1::-1], flags=cv2.INTER_LINEAR)
+        return result
+
+    def rotate_image(self, image, angle):
+        # https://pyimagesearch.com/2017/01/02/rotate-images-correctly-with-opencv-and-python/
+
+        # grab the dimensions of the image and then determine the
+        # center
+        (h, w) = image.shape[:2]
+        (cX, cY) = (w // 2, h // 2)
+        # grab the rotation matrix (applying the negative of the
+        # angle to rotate clockwise), then grab the sine and cosine
+        # (i.e., the rotation components of the matrix)
+        M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
+        cos = np.abs(M[0, 0])
+        sin = np.abs(M[0, 1])
+        # compute the new bounding dimensions of the image
+        nW = int((h * sin) + (w * cos))
+        nH = int((h * cos) + (w * sin))
+        # adjust the rotation matrix to take into account translation
+        M[0, 2] += (nW / 2) - cX
+        M[1, 2] += (nH / 2) - cY
+        # perform the actual rotation and return the image
+        return cv2.warpAffine(image, M, (nW, nH))  
+
+    def process_yolo_img(self):
+        im, im0 = self.preprocess(self.im)
         # print(im.shape)
         # print(img0.shape)
         # print(img.shape)
@@ -132,9 +178,9 @@ class Yolov5Detector:
         det = pred[0].cpu().numpy()
 
         bounding_boxes = BoundingBoxes()
-        bounding_boxes.header = data.header
-        bounding_boxes.image_header = data.header
-        
+        bounding_boxes.header = self.pub_img.header
+        bounding_boxes.image_header = self.pub_img.header
+
         annotator = Annotator(im0, line_width=self.line_thickness, example=str(self.names))
         if len(det):
             # Rescale boxes from img_size to im0 size
@@ -165,16 +211,29 @@ class Yolov5Detector:
 
             # Stream results
             im0 = annotator.result()
-
+        # Save Img 0
+        self.im0 = im0
         # Publish prediction
         self.pred_pub.publish(bounding_boxes)
-
+    
+    def pub_topic_img(self):
         # Publish & visualize images
         if self.view_image:
-            cv2.imshow(str(0), im0)
+            cv2.imshow(str(0), self.im0)
             cv2.waitKey(1)  # 1 millisecond
+            # cv2.imwrite('/home/gus/catkin_ws/src/yolov5_ros/src/annoted_img_02.png',cv2.cvtColor(self.im0, cv2.COLOR_RGB2BGR))
+            # rospy.loginfo('Image Saved')
+            # self.view_image = False
         if self.publish_image:
-            self.image_pub.publish(self.bridge.cv2_to_imgmsg(im0, "bgr8"))
+            # Create without bridge 
+                    # check if map published
+            # self.pub_img.header.frame_id = "camera_depth_frame"c
+            # self.pub_img.encoding = "rgb8"
+            
+            final_flatten = np.array(self.im0).flatten() 
+            self.pub_img.data = final_flatten.tobytes()
+            self.pub_img.height, self.pub_img.width = self.im0.shape
+            self.image_pub.publish(self.pub_img)
         
 
     def preprocess(self, img):
@@ -184,17 +243,32 @@ class Yolov5Detector:
         img0 = img.copy()
         img = np.array([letterbox(img, self.img_size, stride=self.stride, auto=self.pt)[0]])
         # Convert
+        if self.black_and_white:
+            img = img[0]
+            img = np.stack((img,)*3, axis=-1)
+            img = np.array([img])
         img = img[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW
         img = np.ascontiguousarray(img)
 
         return img, img0 
+        
+    
+    def main_loop(self):
+        rate = rospy.Rate(10.0)
+        while not rospy.is_shutdown():
+            if self.started == 1:
+                self.process_yolo_img()
+                self.pub_topic_img()
+            rate.sleep()  
 
 
 if __name__ == "__main__":
+    try:
+        check_requirements(exclude=("tensorboard", "thop"))
+        
+        rospy.init_node("yolov5", anonymous=True)
+        detector = Yolov5Detector()
 
-    check_requirements(exclude=("tensorboard", "thop"))
+    except rospy.ROSInterruptException:
+        pass
     
-    rospy.init_node("yolov5", anonymous=True)
-    detector = Yolov5Detector()
-    
-    rospy.spin()
