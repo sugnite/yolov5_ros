@@ -1,4 +1,13 @@
 # YOLOv5 ROS
+
+## Changes
+Minor modification to work with the [RGB-D Map Segmentation and Pose Estimation](https://github.com/sugnite/RGB-D-Map-Segmentation-and-Pose-Estimation).
+Add some new posible arguments in launch file :
+
+- Image conversion for publication without CV Bridge (ROS Melodic python3)
+- Grayscale image as input
+- Rotation of the image before detection (Bouding boxes published in the rotated frame coordinates)
+
 This is a ROS interface for using YOLOv5 for real time object detection on a ROS image topic. It supports inference on multiple deep learning frameworks used in the [official YOLOv5 repository](https://github.com/ultralytics/yolov5).
 
 ## Installation
