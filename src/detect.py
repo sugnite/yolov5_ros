@@ -156,10 +156,6 @@ class Yolov5Detector:
 
     def process_yolo_img(self):
         im, im0 = self.preprocess(self.im)
-        # print(im.shape)
-        # print(img0.shape)
-        # print(img.shape)
-
         # Run inference
         im = torch.from_numpy(im).to(self.device) 
         im = im.half() if self.half else im.float()
@@ -220,16 +216,10 @@ class Yolov5Detector:
         # Publish & visualize images
         if self.view_image:
             cv2.imshow(str(0), self.im0)
-            cv2.waitKey(1)  # 1 millisecond
-            # cv2.imwrite('/home/gus/catkin_ws/src/yolov5_ros/src/annoted_img_02.png',cv2.cvtColor(self.im0, cv2.COLOR_RGB2BGR))
-            # rospy.loginfo('Image Saved')
+            cv2.waitKey(1)  
             # self.view_image = False
         if self.publish_image:
-            # Create without bridge 
-                    # check if map published
-            # self.pub_img.header.frame_id = "camera_depth_frame"c
-            # self.pub_img.encoding = "rgb8"
-            
+            # Create without bridge            
             final_flatten = np.array(self.im0).flatten() 
             self.pub_img.data = final_flatten.tobytes()
             self.pub_img.height, self.pub_img.width = self.im0.shape
